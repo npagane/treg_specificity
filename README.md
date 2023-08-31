@@ -1,6 +1,6 @@
 code for treg specificity project (will update with doi and specifics soon)
 
-associated data: 10.5281/zenodo.8253629
+associated data: [10.5281/zenodo.8253630](https://zenodo.org/record/8253630)
 
 ##############
 file summaries
