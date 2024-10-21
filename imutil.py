@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import scipy
 import matplotlib.cm as cm
-
+import multiprocessing
 
 
 def read_in_imaris_folder(filename, markers, cell, sample, experiment=None, treatment=None, current_os='\\'):
@@ -17,12 +17,20 @@ def read_in_imaris_folder(filename, markers, cell, sample, experiment=None, trea
     dat['x'] = dat_x["Position X"]
     dat['y'] = dat_y["Position Y"]
     dat['z'] = dat_z["Position Z"]
+    try:
+        dat_vol = pd.read_csv(filename.rstrip()+current_os+pref+"_Volume.csv", header = 2)
+        dat['volume'] = dat_vol["Volume"]
+    except:
+        print("no volume for " + filename)
     # read in marker data
-    for i in range(len(markers)):
-        temp_mean = pd.read_csv(filename.rstrip()+current_os+pref+"_Intensity_Mean_Ch=" + str(i+1) + "_Img=1.csv", header = 2)
-        temp_sum = pd.read_csv(filename.rstrip()+current_os+pref+"_Intensity_Sum_Ch=" + str(i+1) + "_Img=1.csv", header = 2)
-        dat[markers[i] + " MFI"] = temp_mean["Intensity Mean"]
-        dat[markers[i] + " SFI"] = temp_sum["Intensity Sum"]
+    try:
+        for i in range(len(markers)):
+            temp_mean = pd.read_csv(filename.rstrip()+current_os+pref+"_Intensity_Mean_Ch=" + str(i+1) + "_Img=1.csv", header = 2)
+            temp_sum = pd.read_csv(filename.rstrip()+current_os+pref+"_Intensity_Sum_Ch=" + str(i+1) + "_Img=1.csv", header = 2)
+            dat[markers[i] + " MFI"] = temp_mean["Intensity Mean"]
+            dat[markers[i] + " SFI"] = temp_sum["Intensity Sum"]
+    except:
+        print('missing information after ' + markers[i] + " for " + filename)
     # fill in identifiers for the data
     dat['cell'] = cell
     if treatment == None and experiment == None:
@@ -39,14 +47,18 @@ def read_in_imaris_folder(filename, markers, cell, sample, experiment=None, trea
         dat['treatment'] = treatment
     return dat
 
-def remove_duplicate_cells(df, subgroup_cell, majorgroup_cell):
+def remove_duplicate_cells(df, subgroup_cell, majorgroup_cell, exact=True, cutoff=2):
     df.index = np.arange(len(df))
     tempdf1 = df.loc[df['cell']==subgroup_cell,]
     for i in range(len(tempdf1)):
-        samex = tempdf1.iloc[i]['x'] == df['x']
-        samey = tempdf1.iloc[i]['y'] == df['y']
-        samez = tempdf1.iloc[i]['z'] == df['z']
-        combined = samex*samey*samez
+        if exact:
+            samex = tempdf1.iloc[i]['x'] == df['x']
+            samey = tempdf1.iloc[i]['y'] == df['y']
+            samez = tempdf1.iloc[i]['z'] == df['z']
+            combined = samex*samey*samez
+        else:
+            r = np.sqrt((tempdf1.iloc[i]['x']-df['x'])**2 + (tempdf1.iloc[i]['y']-df['y'])**2 + (tempdf1.iloc[i]['z']-df['z'])**2)
+            combined = (r<=cutoff)
         if np.sum(combined) > 1:
             tempdf2 = df.loc[combined,] 
             badinds = np.asarray(tempdf2['cell']== majorgroup_cell) * np.asarray(tempdf1.iloc[i]['sample'] == tempdf2['sample'])
@@ -65,6 +77,9 @@ def plot_LN(df, sample, cell_list, figsize=(15,15), fontsize=30):
     plt.figure(figsize=figsize)
     ax = plt.axes(projection="3d")
     tempdf = df.loc[df['sample']==sample,]
+    cell_inds = np.zeros(len(tempdf), dtype='bool')
+    for cell in cell_list: cell_inds = cell_inds + np.asarray(tempdf['cell'] == cell)
+    tempdf = tempdf.loc[cell_inds]
     # plot points
     temp_scale = np.zeros(len(cell_list))
     for i, cell in enumerate(cell_list):
@@ -190,7 +205,7 @@ def determine_tissue_geometry(df, cell_list):
     for s in tempdf['sample'].unique():
         a = np.abs(np.max(tempdf.loc[tempdf["sample"]==s,]["x"]) - np.min(tempdf.loc[tempdf["sample"]==s,]["x"]))/2.0
         b = np.abs(np.max(tempdf.loc[tempdf["sample"]==s,]["y"]) - np.min(tempdf.loc[tempdf["sample"]==s,]["y"]))/2.0
-        h = 17 #np.abs(np.max(tempdf.loc[tempdf["sample"]==s]["z"])-np.min(tempdf.loc[tempdf["sample"]==s]["z"])) # TODO: 3D KDE for curved surfaces
+        h = np.abs(np.max(tempdf.loc[tempdf["sample"]==s]["z"])-np.min(tempdf.loc[tempdf["sample"]==s]["z"])) 
         df.loc[df['sample']==s,'tissue_semimajor'] = a
         df.loc[df['sample']==s,'tissue_semiminor'] = b
         df.loc[df['sample']==s,'tissue_height'] = h
@@ -199,7 +214,9 @@ def determine_tissue_geometry(df, cell_list):
         df.loc[df['sample']==s,'tissue_density'] = np.sum(tempdf["sample"]==s)/vol
     return df
 
-def determine_local_cell_density(df, ref, cell_list, rad=30):
+def determine_local_cell_density(df, ref_list, cell_list, rad=30):
+    ref_inds = np.zeros(len(df), dtype='bool')
+    for ref in ref_list: ref_inds = ref_inds + np.asarray(df['cell'] == ref)
     tempname = " + ".join(cell_list) 
     cell_inds = np.zeros(len(df), dtype='bool')
     for cell in cell_list: cell_inds = cell_inds + np.asarray(df['cell'] == cell)
@@ -208,8 +225,8 @@ def determine_local_cell_density(df, ref, cell_list, rad=30):
     df['local ' + tempname + ' #'] = np.nan  
     df['local ' + tempname + ' density'] = np.nan
     df['local ' + tempname + ' density scaled'] = np.nan
-    for i in range(len(df.loc[df['cell']==ref].index)):
-        tempind = df.loc[df['cell']==ref].index[i]
+    for i in range(np.sum(ref_inds)):
+        tempind = df.loc[ref_inds].index[i]
         s = df.loc[tempind,'sample']
         temp_cells = df.loc[cell_inds * np.array(df["sample"]==s),][["x", "y", "z"]]
         temp_xyz = np.sqrt(np.sum((df.loc[tempind, ["x", "y", "z"]] - temp_cells)**2, axis = 1))
@@ -317,27 +334,27 @@ def set_associated_cell_markers(df, ref, cell_list, markers, rad=30, inverse=Fal
     # find which items are lists and which are single ints
     templist = np.zeros(len(tempinds),dtype='bool')
     for i in range(len(tempinds)):
-        if type(df.iloc[tempinds[i]][tempname]) == list:
+        if type(df.loc[tempinds[i]][tempname]) == list:
             templist[i] = True
     # for single int associations, iterate through reference 
-    ref_list = df.iloc[tempinds[~templist]][tempname].unique()
+    ref_list = df.loc[tempinds[~templist]][tempname].unique()
     for i in range(len(ref_list)):
         for j in range(len(markers)):
-            df.loc[np.asarray(df[tempname]) == ref_list[i], ref + " " + markers[j]] = df.iloc[ref_list[i]][markers[j]]
+            df.loc[np.asarray(df[tempname]) == ref_list[i], ref + " " + markers[j]] = df.loc[ref_list[i]][markers[j]]
     # for list associations, iterate through cell_list
     association_list = tempinds[templist]
     for i in range(len(association_list)):
         for j in range(len(markers)):
-            df.at[association_list[i], ref + " " + markers[j]] = np.mean(df.iloc[df.iloc[association_list[i]][tempname]][markers[j]])
+            df.at[association_list[i], ref + " " + markers[j]] = np.mean(df.loc[df.loc[association_list[i]][tempname]][markers[j]])
     if inverse:
         for i in range(len(df.loc[df['cell']==ref].index)):
             refind = df.loc[df['cell']==ref].index[i] 
-            truthind = np.sum(pd.isnull(df.iloc[refind][tempname_inverse]))
+            truthind = np.sum(pd.isnull(df.loc[refind][tempname_inverse]))
             for j in range(len(markers)):
                 if truthind:
                     df.at[refind, ref +  " inverse sum " + markers[j]] = 0
                     df.at[refind, ref +  " inverse mean " + markers[j]] = 0
                 else:
-                    df.at[refind, ref +  " inverse sum " + markers[j]] = np.sum(df.iloc[df.loc[refind][tempname_inverse]][markers[j]])
-                    df.at[refind, ref +  " inverse mean " + markers[j]] = np.mean(df.iloc[df.loc[refind][tempname_inverse]][markers[j]])
+                    df.at[refind, ref +  " inverse sum " + markers[j]] = np.sum(df.loc[df.loc[refind][tempname_inverse]][markers[j]])
+                    df.at[refind, ref +  " inverse mean " + markers[j]] = np.mean(df.loc[df.loc[refind][tempname_inverse]][markers[j]])
     return df
